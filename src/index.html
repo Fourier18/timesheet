@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self';" />
+  <title>Timesheet</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>Timesheet</h1>
+    </div>
+    <div id="liveClock" class="live-clock">--:--:--</div>
+  </header>
+
+  <section id="activeBar" class="active-bar"><!-- filled by renderer --></section>
+
+  <div id="clockControls" class="clock-action"><!-- filled by renderer --></div>
+
+  <nav class="controls">
+    <div class="seg" role="group" aria-label="Scope">
+      <button data-scope="week" class="seg-btn active">Days</button>
+      <button data-scope="range" class="seg-btn">Range</button>
+      <button data-scope="all" class="seg-btn">All</button>
+    </div>
+
+    <label class="toggle">
+      <input type="checkbox" id="intervalsToggle" />
+      <span>Intervals</span>
+    </label>
+
+    <div id="weekNav" class="weeknav">
+      <button id="weekPrev" title="Previous window">‹</button>
+      <span id="weekLabel" class="week-label"></span>
+      <button id="weekNext" title="Next window">›</button>
+    </div>
+
+    <div id="rangeNav" class="rangenav">
+      <input type="date" id="rangeStart" class="range-input" />
+      <span class="range-arrow">→</span>
+      <input type="date" id="rangeEnd" class="range-input" />
+      <span id="rangeNote" class="range-note"></span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button id="addBtn" class="ghost">+ Add</button>
+    <button id="csvBtn" class="ghost">CSV</button>
+    <button id="backupBtn" class="ghost">Backup</button>
+  </nav>
+
+  <main id="list" class="list"><!-- filled by renderer --></main>
+
+  <footer class="footer">
+    <span id="dataPath" class="muted"></span>
+  </footer>
+
+  <!-- rate prompt at new-task clock-in -->
+  <dialog id="rateDialog" class="dialog">
+    <form method="dialog" id="rateForm">
+      <h2>New task — set rate</h2>
+      <label class="field">
+        <span>Hourly rate ($/hr)</span>
+        <input type="text" id="rateInput" inputmode="decimal" placeholder="e.g. 65" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Note <span class="optional">(optional)</span></span>
+        <input type="text" id="rateNote" placeholder="e.g. client work, admin…" autocomplete="off" />
+      </label>
+      <p id="rateError" class="form-error" hidden></p>
+      <div class="dlg-actions">
+        <div class="spacer"></div>
+        <button type="button" id="rateCancel" class="ghost">Cancel</button>
+        <button type="button" id="rateStart" class="primary">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- add / edit entry -->
+  <dialog id="editDialog" class="dialog">
+    <form method="dialog" id="editForm">
+      <h2 id="dlgTitle">Add entry</h2>
+
+      <div class="field-row">
+        <label class="field">
+          <span>Start date</span>
+          <input type="date" id="startDate" required />
+        </label>
+        <label class="field">
+          <span>Start time</span>
+          <input type="text" id="startTime" inputmode="numeric"
+                 placeholder="HH:MM" pattern="([01]?\d|2[0-3]):[0-5]\d" required />
+        </label>
+      </div>
+
+      <label class="check-open" id="openRow" hidden>
+        <input type="checkbox" id="openCheck" />
+        <span>Currently clocked in (no end time yet)</span>
+      </label>
+
+      <div class="field-row" id="endRow">
+        <label class="field">
+          <span>End date</span>
+          <input type="date" id="endDate" />
+        </label>
+        <label class="field">
+          <span>End time</span>
+          <input type="text" id="endTime" inputmode="numeric"
+                 placeholder="HH:MM" pattern="([01]?\d|2[0-3]):[0-5]\d" />
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Rate ($/hr)</span>
+        <input type="text" id="rate" inputmode="decimal" placeholder="e.g. 65" autocomplete="off" required />
+      </label>
+
+      <label class="field">
+        <span>Notes</span>
+        <textarea id="notes" rows="2" placeholder="e.g. client work, admin…"></textarea>
+      </label>
+
+      <p id="formError" class="form-error" hidden></p>
+
+      <div class="dlg-actions">
+        <button type="button" id="deleteBtn" class="danger" hidden>Delete</button>
+        <div class="spacer"></div>
+        <button type="button" id="cancelBtn" class="ghost">Cancel</button>
+        <button type="button" id="saveBtn" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="preview-shim.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
