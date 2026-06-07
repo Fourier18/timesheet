@@ -52,6 +52,8 @@
     <button id="backupBtn" class="ghost">Backup</button>
   </nav>
 
+  <datalist id="projectList"><!-- filled by renderer: recent project names within the privacy window --></datalist>
+
   <main id="list" class="list"><!-- filled by renderer --></main>
 
   <footer class="footer">
@@ -62,6 +64,11 @@
   <dialog id="rateDialog" class="dialog">
     <form method="dialog" id="rateForm">
       <h2>New task — set rate</h2>
+      <label class="field">
+        <span>Project / client</span>
+        <input type="text" id="rateProject" list="projectList" placeholder="e.g. Acme Corp — design"
+               autocomplete="off" />
+      </label>
       <label class="field">
         <span>Hourly rate ($/hr)</span>
         <input type="text" id="rateInput" inputmode="decimal" placeholder="e.g. 65" autocomplete="off" />
@@ -112,6 +119,12 @@
                  placeholder="HH:MM" pattern="([01]?\d|2[0-3]):[0-5]\d" />
         </label>
       </div>
+
+      <label class="field">
+        <span>Project / client <span class="optional">(optional)</span></span>
+        <input type="text" id="entryProject" list="projectList" placeholder="e.g. Acme Corp — design"
+               autocomplete="off" />
+      </label>
 
       <label class="field">
         <span>Rate ($/hr)</span>

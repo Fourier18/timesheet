@@ -7,15 +7,20 @@ const state = {
   data: { version: 2, activeTask: null, sessions: [] },
   scope: 'week',                 // 'week' | 'range' | 'all'
   showIntervals: true,
-  spanDays: 7,                   // configurable day count for the 'week' view (1..MAX_RANGE_DAYS)
+  spanDays: 1,                   // configurable day count for the 'week' view (1..MAX_RANGE_DAYS)
   weekAnchorEnd: startOfDay(new Date()),
   rangeStart: startOfDay(addDays(new Date(), -6)),
   rangeEnd: startOfDay(new Date()),
-  editingId: null
+  editingId: null,
+  lastPurgeDay: null            // dayKey of the last project-name purge sweep
 };
 
 const MAX_RANGE_DAYS = 31;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// Project names are kept only for "today" + "yesterday" (by clock-in date),
+// then purged from disk and memory entirely — see purgeExpiredProjects().
+const PROJECT_RETENTION_DAYS = 2;
 
 // ---------------------------------------------------------------------------
 // Time / format helpers
@@ -63,26 +68,6 @@ function formatMoney(x) {
   return '$' + x.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// Split a session into per-local-day pieces at midnight boundaries.
-function splitByDay(s) {
-  const start = sessStart(s);
-  const end = sessEndOrNow(s);
-  const pieces = [];
-  let cursor = start, guard = 0;
-  while (cursor < end && guard++ < 400) {
-    const dayStart = startOfDay(cursor);
-    const nextMidnight = addDays(dayStart, 1);
-    const to = end < nextMidnight ? end : nextMidnight;
-    pieces.push({ key: dayKey(dayStart), dayStart, from: cursor, to, ms: to - cursor, open: isOpen(s) && to.getTime() === end.getTime() });
-    cursor = nextMidnight;
-  }
-  if (pieces.length === 0) {
-    const dayStart = startOfDay(start);
-    pieces.push({ key: dayKey(dayStart), dayStart, from: start, to: end, ms: 0, open: isOpen(s) });
-  }
-  return pieces;
-}
-
 // ---------------------------------------------------------------------------
 // Clock state machine
 // ---------------------------------------------------------------------------
@@ -100,11 +85,11 @@ function taskTotals(taskId) {
   return { ms, earn: hoursOf(ms) * rate };
 }
 
-async function clockInNewTask(rate, notes = '') {
+async function clockInNewTask(rate, project = '', notes = '') {
   const now = new Date();
-  const task = { id: crypto.randomUUID(), rate, startedAt: toLocalISO(now) };
+  const task = { id: crypto.randomUUID(), rate, project, startedAt: toLocalISO(now) };
   state.data.activeTask = task;
-  state.data.sessions.push({ id: crypto.randomUUID(), taskId: task.id, start: toLocalISO(now), end: null, notes, rate });
+  state.data.sessions.push({ id: crypto.randomUUID(), taskId: task.id, start: toLocalISO(now), end: null, notes, rate, project });
   await persist(); render();
 }
 async function goOnBreak() {
@@ -115,7 +100,7 @@ async function goOnBreak() {
 async function resume() {
   const t = state.data.activeTask;
   if (!t) return;
-  state.data.sessions.push({ id: crypto.randomUUID(), taskId: t.id, start: toLocalISO(new Date()), end: null, notes: '', rate: t.rate });
+  state.data.sessions.push({ id: crypto.randomUUID(), taskId: t.id, start: toLocalISO(new Date()), end: null, notes: '', rate: t.rate, project: t.project || '' });
   await persist(); render();
 }
 async function finalClockOut() {
@@ -155,6 +140,37 @@ function fmtRange(s) {
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Project-name privacy: names live only for "today" + "yesterday" (by the
+// session's clock-in date), then are deleted from disk and memory entirely.
+// Hours/earnings/notes are untouched — only the `project` field is dropped.
+// ---------------------------------------------------------------------------
+function projectCutoff() { return addDays(startOfDay(new Date()), -(PROJECT_RETENTION_DAYS - 1)); }
+
+function purgeExpiredProjects() {
+  const cutoff = projectCutoff();
+  let changed = false;
+  for (const s of state.data.sessions) {
+    if (s.project && sessStart(s) < cutoff) { delete s.project; changed = true; }
+  }
+  return changed;
+}
+
+function recentProjectNames() {
+  const cutoff = projectCutoff();
+  const names = new Set();
+  for (const s of state.data.sessions) {
+    if (s.project && sessStart(s) >= cutoff) names.add(s.project);
+  }
+  if (state.data.activeTask && state.data.activeTask.project) names.add(state.data.activeTask.project);
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+function populateProjectList() {
+  document.getElementById('projectList').innerHTML =
+    recentProjectNames().map(n => `<option value="${escapeAttr(n)}"></option>`).join('');
+}
+
 async function persist() { await window.api.save(state.data); }
 async function load() {
   const data = await window.api.load();
@@ -172,6 +188,7 @@ function render() {
   renderClockControls();
   renderControls();
   renderList();
+  populateProjectList();
 }
 
 function renderActiveBar() {
@@ -244,25 +261,42 @@ function renderControls() {
   }
 }
 
-// dayKey -> { dayStart, totalMs, totalEarn, pieces:[{piece, session}] }
-function buildDayMap() {
-  const map = new Map();
+// Group sessions into "session blocks" (one clock-in -> clock-out task each),
+// then bucket each *whole* block under the calendar day it started on.
+// Deliberately not split at midnight (Option A): an 11:30pm-1:00am task is one
+// unbroken block with one running total, shown entirely under its start day.
+//
+// dayKey -> { dayStart, totalMs, totalEarn, blocks:[{taskId, project, sessions, ms, earn, open, start}] }
+function buildDayBlocks() {
+  const taskMap = new Map();
   for (const s of state.data.sessions) {
-    for (const piece of splitByDay(s)) {
-      let e = map.get(piece.key);
-      if (!e) { e = { dayStart: piece.dayStart, totalMs: 0, totalEarn: 0, pieces: [] }; map.set(piece.key, e); }
-      e.totalMs += piece.ms;
-      e.totalEarn += hoursOf(piece.ms) * (s.rate || 0);
-      e.pieces.push({ piece, session: s });
-    }
+    let t = taskMap.get(s.taskId);
+    if (!t) { t = { taskId: s.taskId, sessions: [] }; taskMap.set(s.taskId, t); }
+    t.sessions.push(s);
   }
-  for (const e of map.values()) e.pieces.sort((a, b) => a.piece.from - b.piece.from);
+
+  const map = new Map();
+  for (const t of taskMap.values()) {
+    t.sessions.sort((a, b) => sessStart(a) - sessStart(b));
+    const start = sessStart(t.sessions[0]);
+    let ms = 0, earn = 0;
+    for (const s of t.sessions) { const d = durMs(s); ms += d; earn += hoursOf(d) * (s.rate || 0); }
+    const open = t.sessions.some(isOpen);
+    const project = (t.sessions.find(s => s.project) || {}).project || '';
+    const key = dayKey(start);
+    let e = map.get(key);
+    if (!e) { e = { dayStart: startOfDay(start), totalMs: 0, totalEarn: 0, blocks: [] }; map.set(key, e); }
+    e.totalMs += ms;
+    e.totalEarn += earn;
+    e.blocks.push({ taskId: t.taskId, project, sessions: t.sessions, ms, earn, open, start });
+  }
+  for (const e of map.values()) e.blocks.sort((a, b) => a.start - b.start);
   return map;
 }
 
 function renderList() {
   const list = document.getElementById('list');
-  const map = buildDayMap();
+  const map = buildDayBlocks();
   list.innerHTML = '';
 
   let dayList; // [{ key, dayStart }]
@@ -270,7 +304,7 @@ function renderList() {
     dayList = [];
     for (let i = 0; i < state.spanDays; i++) { const d = addDays(state.weekAnchorEnd, -i); dayList.push({ key: dayKey(d), dayStart: d }); }
     const totals = sumDays(map, dayList), live = anyLive(map, dayList);
-    const opts = [1,3,7,14,31].map(n =>
+    const opts = Array.from({ length: MAX_RANGE_DAYS }, (_, i) => i + 1).map(n =>
       `<option value="${n}"${n===state.spanDays?' selected':''}>${n === 1 ? 'Day' : n + '-day'} total</option>`
     ).join('');
     const wt = document.createElement('div');
@@ -295,7 +329,7 @@ function renderList() {
     const entry = map.get(dk.key);
     const total = entry ? entry.totalMs : 0;
     const earn = entry ? entry.totalEarn : 0;
-    const hasLive = entry && entry.pieces.some(p => p.piece.open);
+    const hasLive = entry && entry.blocks.some(b => b.open);
 
     const dayEl = document.createElement('div');
     dayEl.className = 'day';
@@ -306,15 +340,10 @@ function renderList() {
       <div class="total ${hasLive ? 'live' : ''}" ${hasLive ? `data-live-day="${dk.key}"` : ''}>${formatHM(total)} · ${formatMoney(earn)}</div>`;
     dayEl.appendChild(head);
 
-    if (state.showIntervals && entry) {
+    if (entry) {
       const wrap = document.createElement('div');
-      wrap.className = 'intervals';
-      let runMs = 0, runEarn = 0;
-      for (const { piece, session } of entry.pieces) {
-        runMs += piece.ms;
-        runEarn += hoursOf(piece.ms) * (session.rate || 0);
-        wrap.appendChild(intervalRow(piece, session, runMs, runEarn));
-      }
+      wrap.className = 'blocks';
+      for (const block of entry.blocks) wrap.appendChild(blockEl(block));
       dayEl.appendChild(wrap);
     }
     list.appendChild(dayEl);
@@ -327,7 +356,7 @@ function sumDays(map, dayList) {
   return { ms, earn };
 }
 function anyLive(map, dayList) {
-  return dayList.some(dk => (map.get(dk.key)?.pieces || []).some(p => p.piece.open));
+  return dayList.some(dk => (map.get(dk.key)?.blocks || []).some(b => b.open));
 }
 function appendTotalHeader(list, label, totals, live) {
   const wt = document.createElement('div');
@@ -336,21 +365,49 @@ function appendTotalHeader(list, label, totals, live) {
   list.appendChild(wt);
 }
 
-function intervalRow(piece, session, runMs, runEarn) {
+// One "session" in the user's vocabulary = one clock-in -> clock-out block.
+// Its header carries the project name and a running total across all of its
+// break-segments; the segments themselves render as interval rows beneath.
+function blockEl(block) {
+  const wrap = document.createElement('div');
+  wrap.className = 'block';
+
+  const last = block.sessions[block.sessions.length - 1];
+  const rangeTxt = block.open
+    ? `${fmtTime(block.start)} – <span class="open">now</span>`
+    : `${fmtTime(block.start)} – ${fmtTime(sessEndOrNow(last))}`;
+  const projTxt = block.project
+    ? `<span class="proj">${escapeAttr(block.project)}</span>`
+    : `<span class="proj unlabeled">· no project ·</span>`;
+
+  const head = document.createElement('div');
+  head.className = 'block-head';
+  head.innerHTML = `
+    <div>${projTxt}<span class="block-range">${rangeTxt}</span></div>
+    <div class="block-total ${block.open ? 'live' : ''}" ${block.open ? `data-live-block="${block.taskId}"` : ''}>${formatHM(block.ms)} · ${formatMoney(block.earn)}</div>`;
+  wrap.appendChild(head);
+
+  if (state.showIntervals) {
+    const body = document.createElement('div');
+    body.className = 'block-body';
+    for (const session of block.sessions) body.appendChild(intervalRow(session));
+    wrap.appendChild(body);
+  }
+  return wrap;
+}
+
+function intervalRow(session) {
   const row = document.createElement('div');
   row.className = 'row';
-  const startedPrevDay = piece.from.getTime() === piece.dayStart.getTime() && sessStart(session).getTime() < piece.dayStart.getTime();
-  const continuesNextDay = !piece.open && piece.to.getTime() === addDays(piece.dayStart, 1).getTime() && sessEndOrNow(session).getTime() > piece.to.getTime();
-  const toTxt = piece.open ? `<span class="open">now</span>` : fmtTime(piece.to);
-  let tag = '';
-  if (startedPrevDay) tag = `<span class="split-tag">cont</span>`;
-  else if (continuesNextDay) tag = `<span class="split-tag">next</span>`;
-  const pieceEarn = hoursOf(piece.ms) * (session.rate || 0);
+  const open = isOpen(session);
+  const ms = durMs(session);
+  const earn = hoursOf(ms) * (session.rate || 0);
+  const toTxt = open ? `<span class="open">now</span>` : fmtTime(sessEndOrNow(session));
 
   row.innerHTML = `
-    <div class="time">${fmtTime(piece.from)} – ${toTxt}${tag}</div>
-    <div class="dur ${piece.open ? 'live' : ''}" ${piece.open ? 'data-live-piece' : ''} title="Running: ${formatHM(runMs)} · ${formatMoney(runEarn)}">${formatHM(piece.ms)}</div>
-    <div class="money">${formatMoney(pieceEarn)}</div>
+    <div class="time">${fmtTime(sessStart(session))} – ${toTxt}</div>
+    <div class="dur ${open ? 'live' : ''}" ${open ? `data-live-piece="${session.id}"` : ''}>${formatHM(ms)}</div>
+    <div class="money" ${open ? `data-live-money="${session.id}"` : ''}>${formatMoney(earn)}</div>
     <input class="note-input" data-note="${session.id}" value="${escapeAttr(session.notes || '')}" placeholder="notes…" />
     <div class="actions">
       <button data-edit="${session.id}" title="Edit">Edit</button>
@@ -366,35 +423,69 @@ function escapeAttr(s) {
 // ---------------------------------------------------------------------------
 // Live tick
 // ---------------------------------------------------------------------------
+// Re-purge once per calendar-day rollover (e.g. an overnight session pushes an
+// older entry past the retention window while the app stays open).
+function maybePurgeOnRollover() {
+  const today = dayKey(startOfDay(new Date()));
+  if (state.lastPurgeDay === today) return;
+  state.lastPurgeDay = today;
+  if (purgeExpiredProjects()) { persist(); render(); }
+}
+
+// Runs every second. Deliberately never calls render() on the working path —
+// a full re-render destroys and rebuilds the span-select dropdown each time,
+// which is what made it impossible to pick an option while clocked in. Instead
+// we update only the live text nodes directly, leaving the DOM (and any open
+// dropdown) untouched.
 function tick() {
   const now = new Date();
   document.getElementById('liveClock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+  maybePurgeOnRollover();
 
   const st = clockState();
   if (st === 'idle') return;
 
   const task = state.data.activeTask;
-  const { ms, earn } = taskTotals(task.id);
+  const { ms: taskMs, earn: taskEarn } = taskTotals(task.id);
   const liveTask = document.querySelector('[data-live-task]');
-  if (liveTask) liveTask.textContent = `${formatHM(ms)} · ${formatMoney(earn)}`;
+  if (liveTask) liveTask.textContent = `${formatHM(taskMs)} · ${formatMoney(taskEarn)}`;
 
   if (st !== 'working') return;
 
-  if (state.showIntervals && document.querySelector('[data-live-piece]')) { render(); return; }
-  const map = buildDayMap();
-  document.querySelectorAll('[data-live-day]').forEach(node => {
-    const e = map.get(node.getAttribute('data-live-day'));
-    node.textContent = `${formatHM(e?.totalMs || 0)} · ${formatMoney(e?.totalEarn || 0)}`;
-  });
+  const cur = openSession();
+  if (!cur) return;
+  const ms = durMs(cur);
+  const earn = hoursOf(ms) * (cur.rate || 0);
+
+  const durNode = document.querySelector(`[data-live-piece="${cur.id}"]`);
+  if (durNode) durNode.textContent = formatHM(ms);
+  const moneyNode = document.querySelector(`[data-live-money="${cur.id}"]`);
+  if (moneyNode) moneyNode.textContent = formatMoney(earn);
+
+  const blockNode = document.querySelector(`[data-live-block="${cur.taskId}"]`);
+  if (blockNode) blockNode.textContent = `${formatHM(taskMs)} · ${formatMoney(taskEarn)}`;
+
+  // The active block is bucketed under its clock-in day (Option A — never
+  // split at midnight), so at most one day total can be live at a time.
+  const blockDayKey = dayKey(new Date(task.startedAt));
+  const dayNode = document.querySelector(`[data-live-day="${blockDayKey}"]`);
   const totalNode = document.querySelector('[data-live-total]');
-  if (totalNode) {
-    let dayList = [];
-    if (state.scope === 'week') for (let i = 0; i < state.spanDays; i++) dayList.push({ key: dayKey(addDays(state.weekAnchorEnd, -i)) });
-    else if (state.scope === 'range') {
-      const span = Math.round((state.rangeEnd - state.rangeStart) / 86400000);
-      for (let i = 0; i <= span; i++) dayList.push({ key: dayKey(addDays(state.rangeEnd, -i)) });
+  if (dayNode || totalNode) {
+    const map = buildDayBlocks();
+    if (dayNode) {
+      const e = map.get(blockDayKey);
+      dayNode.textContent = `${formatHM(e?.totalMs || 0)} · ${formatMoney(e?.totalEarn || 0)}`;
     }
-    if (dayList.length) { const t = sumDays(map, dayList); totalNode.textContent = `${formatHM(t.ms)} · ${formatMoney(t.earn)} ·`; }
+    if (totalNode) {
+      let dayList = [];
+      if (state.scope === 'week') for (let i = 0; i < state.spanDays; i++) dayList.push({ key: dayKey(addDays(state.weekAnchorEnd, -i)) });
+      else if (state.scope === 'range') {
+        const span = Math.round((state.rangeEnd - state.rangeStart) / 86400000);
+        for (let i = 0; i <= span; i++) dayList.push({ key: dayKey(addDays(state.rangeEnd, -i)) });
+      }
+      if (dayList.length) { const t = sumDays(map, dayList); totalNode.textContent = `${formatHM(t.ms)} · ${formatMoney(t.earn)} ·`; }
+    }
   }
 }
 
@@ -404,10 +495,11 @@ function tick() {
 const rateDlg = document.getElementById('rateDialog');
 function openRatePrompt() {
   document.getElementById('rateInput').value = '';   // always blank for a new task
+  document.getElementById('rateProject').value = '';
   document.getElementById('rateNote').value = '';
   document.getElementById('rateError').hidden = true;
   rateDlg.showModal();
-  setTimeout(() => document.getElementById('rateInput').focus(), 30);
+  setTimeout(() => document.getElementById('rateProject').focus(), 30);
 }
 async function confirmRate() {
   const rate = parseRate(document.getElementById('rateInput').value);
@@ -415,9 +507,10 @@ async function confirmRate() {
     const e = document.getElementById('rateError'); e.textContent = 'Enter a rate (a number ≥ 0).'; e.hidden = false;
     return;
   }
+  const project = document.getElementById('rateProject').value.trim();
   const notes = document.getElementById('rateNote').value.trim();
   rateDlg.close();
-  await clockInNewTask(rate, notes);
+  await clockInNewTask(rate, project, notes);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +541,7 @@ function openDialog(session) {
       document.getElementById('endTime').value = '';
     }
     document.getElementById('rate').value = session.rate != null ? session.rate : '';
+    document.getElementById('entryProject').value = session.project || '';
     document.getElementById('notes').value = session.notes || '';
   } else {
     document.getElementById('startDate').value = dayKey(now);
@@ -455,6 +549,7 @@ function openDialog(session) {
     document.getElementById('endDate').value = dayKey(now);
     document.getElementById('endTime').value = '';
     document.getElementById('rate').value = '';
+    document.getElementById('entryProject').value = '';
     document.getElementById('notes').value = '';
   }
   syncOpenCheck();
@@ -476,13 +571,14 @@ async function saveDialog() {
   if (err) { const e = document.getElementById('formError'); e.textContent = err; e.hidden = false; return; }
 
   const notes = document.getElementById('notes').value.trim();
+  const project = document.getElementById('entryProject').value.trim();
   if (state.editingId) {
     const s = state.data.sessions.find(x => x.id === state.editingId);
     s.start = toLocalISO(start);
     s.end = end ? toLocalISO(end) : null;
-    s.rate = rate; s.notes = notes;
+    s.rate = rate; s.notes = notes; s.project = project;
   } else {
-    state.data.sessions.push({ id: crypto.randomUUID(), taskId: crypto.randomUUID(), start: toLocalISO(start), end: end ? toLocalISO(end) : null, rate, notes });
+    state.data.sessions.push({ id: crypto.randomUUID(), taskId: crypto.randomUUID(), start: toLocalISO(start), end: end ? toLocalISO(end) : null, rate, notes, project });
   }
   await persist(); dlg.close(); render();
 }
@@ -564,7 +660,7 @@ function wire() {
   });
   // inline notes: save on change (blur / enter), no re-render to preserve focus
   list.addEventListener('change', async e => {
-    if (e.target.id === 'spanSelect') { state.spanDays = parseInt(e.target.value, 10) || 7; render(); return; }
+    if (e.target.id === 'spanSelect') { state.spanDays = parseInt(e.target.value, 10) || 1; render(); return; }
     const id = e.target.getAttribute && e.target.getAttribute('data-note');
     if (!id) return;
     const s = state.data.sessions.find(x => x.id === id);
@@ -577,7 +673,7 @@ function wire() {
   // rate prompt
   document.getElementById('rateStart').addEventListener('click', confirmRate);
   document.getElementById('rateCancel').addEventListener('click', () => rateDlg.close());
-  ['rateInput', 'rateNote'].forEach(id => document.getElementById(id)
+  ['rateProject', 'rateInput', 'rateNote'].forEach(id => document.getElementById(id)
     .addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); confirmRate(); } }));
   rateDlg.addEventListener('cancel', e => { e.preventDefault(); rateDlg.close(); });
 
@@ -595,6 +691,8 @@ function wire() {
 (async function boot() {
   wire();
   await load();
+  state.lastPurgeDay = dayKey(startOfDay(new Date()));
+  if (purgeExpiredProjects()) await persist();
   render();
   tick();
   setInterval(tick, 1000);
