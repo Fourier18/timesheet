@@ -64,10 +64,6 @@ Outputs to `dist/`:
 
 For anything deeper — the data schema, the clock state machine, theming rules, build internals — see **[`HANDOFF.md`](HANDOFF.md)**, which is the engineering source of truth.
 
-## Design constraint
-
-The theme deliberately uses **no orange, yellow, or amber anywhere** — including break and warning states. Paused/standby uses a grey-green tone; true alerts use red. Keep it that way if you restyle.
-
 ## Credits
 
 - **Creative Director:** Joshua ([@Fourier18](https://github.com/Fourier18)) — concept, the clock/break/rate behavior, the views and totals design, the CRT/steel aesthetic, and sign-off
