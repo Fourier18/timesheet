@@ -2,7 +2,7 @@
 
 A local, offline desktop **time-tracking app** for Windows. Clock in with an hourly rate, take breaks, clock out — the app tracks your hours and computes earnings. All data lives in a single JSON file on your own machine. No server, no account, no network.
 
-Built with Electron. Styled as a green-phosphor CRT terminal set into an industrial-steel panel — a "Nostromo" aesthetic.
+Built with Electron. Styled as a green-phosphor CRT terminal set into a Nostromo green industrial-steel panel.
 
 ## What it does
 
