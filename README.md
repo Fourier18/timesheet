@@ -10,6 +10,7 @@ Built with Electron. Styled as a green-phosphor CRT terminal set into a Nostromo
 - **Per-clock-in hourly rate** — prompted each time you clock in (always blank, never prefilled). Earnings = hours × rate, summed across sessions.
 - **Flexible views** — see your time by **Days** (with a Day / 3-day / 7-day / 14-day / 31-day total selector), a custom **Range** (up to 31 days), or **All** recorded days.
 - **Per-session notes**, plus add/edit of past entries with validation (no overlapping sessions, end-after-start, etc.).
+- **Reopen a finished session** — edit any completed entry, mark it "still clocked in" (or clear its end time), and you're clocked back in on it, continuing from its original start.
 - **Export** — CSV (one row per session) or a full JSON backup, via native save dialogs.
 
 ## Data & privacy

@@ -4,9 +4,73 @@ A running record of what was built, when, and why. Most recent phase at the top.
 
 ---
 
+## Phase 3 — Reopen completed sessions to clock back in
+
+**Commit:** _(this change; see git log)_
+
+This phase **reverses a decision from Phase 2.** Phase 2 stopped the crash by
+*rejecting* the reopen attempt ("Cannot reopen a completed session"). That was
+the wrong call — a completed session should be editable and reopenable like
+anything else. Phase 3 builds the actual reopen workflow.
+
+### What was built
+
+- **Reopen a completed session:** in the Add/Edit dialog, the "still clocked in —
+  no end time" toggle is now available on **any** existing entry (previously it
+  only appeared when editing an already-open session). Ticking it — or clearing
+  the end time — and saving reopens that session.
+- **A reopened session becomes the live one:** its block's task is reconstructed
+  as `activeTask`, so the top bar shows *Working*, the clock ticks, and
+  Break / Clock Out work normally again.
+- **Interval-reopen semantics (user's choice):** the reopened interval runs
+  continuously from its **original start time to now** — all elapsed time since
+  it ended is counted. The alternative (keep the finished interval, start a fresh
+  one from now) was offered and declined.
+- **Validation relaxed:** the Phase 2 "Cannot reopen a completed session"
+  rejection is gone. The only remaining guard is the original one-clock
+  invariant — you can't reopen a session while a *different* one is still open.
+
+### What you can now do
+
+- Edit a finished entry, tick "still clocked in" (or clear the end time), save →
+  you're clocked back in on it, counting from its original start.
+- Break / Clock Out from a reopened session exactly like a normal live session.
+
+### Decisions made
+
+- **Interval-reopen over resume-from-now:** reopening clears the clock-out and
+  runs the same interval to now, rather than appending a new interval. Matches
+  the natural "clear the end time and keep going."
+- **Reopen, don't reject:** reverses Phase 2's reject-and-defer. Completed
+  entries are first-class editable.
+- **Kept the one-open-session invariant:** reopening is blocked only if another
+  session is already open — in normal single-clock use this never triggers.
+- **Defensive `renderActiveBar` guard retained:** an open session with no
+  `activeTask` renders as idle instead of crashing (belt-and-suspenders; a normal
+  reopen always sets `activeTask`).
+
+### How to test
+
+- Clock in, clock out → one completed block. Edit it, tick "still clocked in",
+  save → the block goes live, top bar shows *Working*, clock ticks, total climbs
+  from the original start.
+- While that session is live, edit a *different* completed entry and tick "still
+  clocked in" → blocked with "Another session is still open"; nothing changes.
+- Edit a completed entry normally (keep an end time) → stays completed, no active
+  session created.
+
+### Deferred / out of scope
+
+- **Resume-from-now** mode (keep the finished interval + add a new one from now) —
+  not built; interval-reopen was chosen instead.
+- Carried from Phase 2: rate history / smart defaults, earnings analytics,
+  tag-based filtering.
+
+---
+
 ## Phase 2 — Rollover anchor bug and orphaned-session crash
 
-**Commit:** 1825af1
+**Commit:** 7427d26
 
 ### What was built
 

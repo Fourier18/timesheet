@@ -118,9 +118,10 @@ function validate(candidate, exceptId) {
   if (candidate.end !== null) {
     if (!candidate.end) return 'End date/time is invalid.';
     if (candidate.end <= candidate.start) return 'Clock-out must be after clock-in.';
-  } else {
-    if (!state.data.activeTask) return 'Cannot reopen a completed session — use Clock In to start a new one.';
-    if (state.data.sessions.some(s => isOpen(s) && s.id !== exceptId)) return 'Another session is still open.';
+  } else if (state.data.sessions.some(s => isOpen(s) && s.id !== exceptId)) {
+    // Reopening a session (no end time) is allowed — it becomes the live one —
+    // but only if you are not already clocked in on a different session.
+    return 'Another session is still open.';
   }
   if (candidate.rate === null) return 'Rate is required (a number ≥ 0).';
   const aStart = candidate.start.getTime();
@@ -197,7 +198,9 @@ function renderActiveBar() {
   const st = clockState();
   if (st === 'idle') { bar.innerHTML = ''; return; }
   const task = state.data.activeTask;
-  // Orphaned open session (edit cleared end time without setting activeTask) — treat as idle.
+  // Defensive: a malformed data file could have an open session with no
+  // activeTask. Reopening via the edit dialog always sets activeTask, so this
+  // should not happen in normal use — treat it as idle rather than crash.
   if (!task) { bar.innerHTML = ''; return; }
   const { ms, earn } = taskTotals(task.id);
 
@@ -538,8 +541,10 @@ function openDialog(session) {
   document.getElementById('formError').hidden = true;
   document.getElementById('deleteBtn').hidden = !session;
 
+  // The "still clocked in" toggle is available for any existing entry, so a
+  // completed session can be reopened (uncheck end time) to clock back in.
   const editingOpen = !!(session && isOpen(session));
-  document.getElementById('openRow').hidden = !editingOpen;
+  document.getElementById('openRow').hidden = !session;
   document.getElementById('openCheck').checked = editingOpen;
 
   const now = new Date();
@@ -592,6 +597,12 @@ async function saveDialog() {
     s.start = toLocalISO(start);
     s.end = end ? toLocalISO(end) : null;
     s.rate = rate; s.notes = notes; s.project = project;
+    if (!s.end) {
+      // Reopened (end time cleared): make this session's block the live one so
+      // it counts from its start to now and Break / Clock Out work again.
+      // validate() has already guaranteed no other session is open.
+      state.data.activeTask = { id: s.taskId, rate: s.rate, project: s.project || '', startedAt: s.start };
+    }
   } else {
     state.data.sessions.push({ id: crypto.randomUUID(), taskId: crypto.randomUUID(), start: toLocalISO(start), end: end ? toLocalISO(end) : null, rate, notes, project });
   }

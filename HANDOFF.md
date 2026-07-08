@@ -151,9 +151,13 @@ own line** · Edit / Del buttons. Open sessions show a live "now" that ticks.
 **Dialogs:**
 - *Clock-in rate dialog:* hourly rate (required, blank) + **optional Note**
   (`rateNote`).
-- *Add / Edit entry:* start & end date+time, "currently clocked in" checkbox
-  (open session), rate (required), notes. Validation rejects: invalid times,
-  end ≤ start, a second open session, rate < 0, and **overlapping sessions**.
+- *Add / Edit entry:* start & end date+time, a **"still clocked in" checkbox**
+  (shown on any existing entry), rate (required), notes. Ticking it — or clearing
+  the end time — **reopens** that session: its block becomes the live one, running
+  from its original start to now, so Break / Clock Out work again (`saveDialog`
+  reconstructs `activeTask` from the session). Validation rejects: invalid times,
+  end ≤ start, a **second** open session (only one clock runs at a time), rate < 0,
+  and **overlapping sessions**.
 
 **Export:** CSV (one row per session, with date, in/out, hours, rate, earnings,
 notes) and full JSON backup. Both go through native save dialogs in `main.js`.
