@@ -118,8 +118,9 @@ function validate(candidate, exceptId) {
   if (candidate.end !== null) {
     if (!candidate.end) return 'End date/time is invalid.';
     if (candidate.end <= candidate.start) return 'Clock-out must be after clock-in.';
-  } else if (state.data.sessions.some(s => isOpen(s) && s.id !== exceptId)) {
-    return 'Another session is still open.';
+  } else {
+    if (!state.data.activeTask) return 'Cannot reopen a completed session — use Clock In to start a new one.';
+    if (state.data.sessions.some(s => isOpen(s) && s.id !== exceptId)) return 'Another session is still open.';
   }
   if (candidate.rate === null) return 'Rate is required (a number ≥ 0).';
   const aStart = candidate.start.getTime();
@@ -196,6 +197,8 @@ function renderActiveBar() {
   const st = clockState();
   if (st === 'idle') { bar.innerHTML = ''; return; }
   const task = state.data.activeTask;
+  // Orphaned open session (edit cleared end time without setting activeTask) — treat as idle.
+  if (!task) { bar.innerHTML = ''; return; }
   const { ms, earn } = taskTotals(task.id);
 
   if (st === 'working') {
@@ -426,10 +429,22 @@ function escapeAttr(s) {
 // Re-purge once per calendar-day rollover (e.g. an overnight session pushes an
 // older entry past the retention window while the app stays open).
 function maybePurgeOnRollover() {
-  const today = dayKey(startOfDay(new Date()));
+  const todayStart = startOfDay(new Date());
+  const today = dayKey(todayStart);
   if (state.lastPurgeDay === today) return;
+
+  // If the day view was anchored on what was "today" before this rollover
+  // (i.e. the user hadn't navigated away to an older day), advance the
+  // anchor so the new day — and any live session now bucketed under it —
+  // comes into view automatically instead of staying parked on yesterday.
+  if (state.scope === 'week' && dayKey(state.weekAnchorEnd) === state.lastPurgeDay) {
+    state.weekAnchorEnd = todayStart;
+  }
+
   state.lastPurgeDay = today;
-  if (purgeExpiredProjects()) { persist(); render(); }
+  const purged = purgeExpiredProjects();
+  if (purged) persist();
+  render();
 }
 
 // Runs every second. Deliberately never calls render() on the working path —

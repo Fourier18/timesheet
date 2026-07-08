@@ -4,6 +4,43 @@ A running record of what was built, when, and why. Most recent phase at the top.
 
 ---
 
+## Phase 2 — Rollover anchor bug and orphaned-session crash
+
+**Commit:** 1825af1
+
+### What was built
+
+#### Midnight rollover: day view anchor now advances automatically
+- **Bug:** `weekAnchorEnd` is set once at boot and never updated as the clock rolls past midnight. A session clocked in on the new day is bucketed under the new date (Option A), but the DAYS view stayed parked on the previous day — so the live session appeared missing even though it was present
+- **Fix:** `maybePurgeOnRollover()` (fires once per calendar-day rollover inside `tick()`) now also advances `weekAnchorEnd` to the new day, but only when the anchor was previously pointing at "today" — manual backward navigation (‹) is preserved
+
+#### Orphaned-session crash: edit dialog could silently crash the renderer
+- **Bug trail:** Clearing the end-time fields on a completed session in the Edit dialog passed `validate()` (null end, no competing open sessions) and saved `s.end = null`. On render, `renderActiveBar()` checked `clockState()` which returned `'working'` (open session exists), then immediately did `state.data.activeTask.id` — but `activeTask` was null. `TypeError` aborted the render mid-call. Every reload re-entered the same crash, leaving a blank screen with no list visible
+- **Fix — prevent:** `validate()` now rejects a null-end edit with "Cannot reopen a completed session — use Clock In to start a new one" when `activeTask` is null
+- **Fix — defensive:** `renderActiveBar()` exits cleanly as idle if `activeTask` is null, so a stale orphaned open session in the data file can no longer crash the renderer
+
+### What you can now do
+
+- Leave the app open overnight → day view automatically rolls to the new date; today's live session is visible without clicking Next
+- Attempt to clear end time on a completed session → get a clear error instead of a silent crash and blank screen
+
+### Decisions made
+
+- **Rollover scope:** Advance the anchor only when it was pointing at "today" before rollover. If you had navigated backward to an older date, midnight does not move you
+- **Orphaned session: reject, not auto-repair:** Could have synthesized an `activeTask` from the edited session to make it live again, but that requires inventing `startedAt`, rate, and project from potentially stale data. A clear error at save time is the honest path; Clock In is the right way to start a new session
+
+### How to test
+
+- Open app just before midnight, leave running → at 00:01 the DAYS view should advance to the new date automatically
+- Edit a completed session, clear end-time fields, save → "Cannot reopen a completed session" error shown; session is unchanged
+- Manually set `"end": null` on a session in the JSON with `"activeTask": null` → app should load and render normally (idle state), not go blank
+
+### Deferred / out of scope
+
+- Proper "reopen session" workflow — one that correctly sets `activeTask`, restores rate and project, and allows clock-out. Currently: Clock In to start a new session
+
+---
+
 ## Phase 1 — Project field, session blocks, privacy purge, and UX refinement
 
 **Commit:** e3cf7a9
